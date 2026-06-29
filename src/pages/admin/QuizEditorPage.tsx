@@ -7,6 +7,7 @@ type Quiz = {
   id: string;
   title: string;
   room_code: string | null;
+  status: string;
 };
 
 type Question = {
@@ -25,6 +26,9 @@ type Option = {
   order_no: number;
 };
 
+const emptyOptionTexts = ["", "", "", ""];
+const emptyOptionIds = ["", "", "", ""];
+
 export function QuizEditorPage() {
   const { quizId } = useParams();
   const navigate = useNavigate();
@@ -36,11 +40,32 @@ export function QuizEditorPage() {
   const [questionText, setQuestionText] = useState("");
   const [timeLimit, setTimeLimit] = useState(20);
   const [basePoints, setBasePoints] = useState(1000);
-  const [optionTexts, setOptionTexts] = useState(["", "", "", ""]);
+  const [optionTexts, setOptionTexts] = useState<string[]>(emptyOptionTexts);
+  const [optionIds, setOptionIds] = useState<string[]>(emptyOptionIds);
   const [correctIndex, setCorrectIndex] = useState(0);
 
+  const [editingQuestionId, setEditingQuestionId] = useState<string | null>(
+    null
+  );
+
   const [errorText, setErrorText] = useState("");
+  const [successText, setSuccessText] = useState("");
   const [loading, setLoading] = useState(true);
+  const [saving, setSaving] = useState(false);
+
+  const isEditing = editingQuestionId !== null;
+
+  function resetForm() {
+    setEditingQuestionId(null);
+    setQuestionText("");
+    setTimeLimit(20);
+    setBasePoints(1000);
+    setOptionTexts(["", "", "", ""]);
+    setOptionIds(["", "", "", ""]);
+    setCorrectIndex(0);
+    setErrorText("");
+    setSuccessText("");
+  }
 
   async function loadData() {
     if (!quizId) return;
@@ -59,7 +84,7 @@ export function QuizEditorPage() {
 
     const { data: quizData, error: quizError } = await supabase
       .from("quizzes")
-      .select("id, title, room_code")
+      .select("id, title, room_code, status")
       .eq("id", quizId)
       .single();
 
@@ -81,7 +106,7 @@ export function QuizEditorPage() {
       return;
     }
 
-    const questionIds = (questionData ?? []).map((q) => q.id);
+    const questionIds = (questionData ?? []).map((question) => question.id);
 
     let optionData: Option[] = [];
 
@@ -107,17 +132,132 @@ export function QuizEditorPage() {
     setLoading(false);
   }
 
-  async function addQuestion(e: FormEvent) {
+  function startEditQuestion(question: Question) {
+    const questionOptions = options
+      .filter((option) => option.question_id === question.id)
+      .sort((a, b) => a.order_no - b.order_no);
+
+    const nextTexts = ["", "", "", ""];
+    const nextIds = ["", "", "", ""];
+    let nextCorrectIndex = 0;
+
+    questionOptions.forEach((option) => {
+      const index = Math.max(0, Math.min(3, option.order_no - 1));
+
+      nextTexts[index] = option.option_text;
+      nextIds[index] = option.id;
+
+      if (option.is_correct) {
+        nextCorrectIndex = index;
+      }
+    });
+
+    setEditingQuestionId(question.id);
+    setQuestionText(question.question_text);
+    setTimeLimit(question.time_limit_seconds);
+    setBasePoints(question.base_points);
+    setOptionTexts(nextTexts);
+    setOptionIds(nextIds);
+    setCorrectIndex(nextCorrectIndex);
+    setErrorText("");
+    setSuccessText("");
+
+    window.scrollTo({
+      top: 0,
+      behavior: "smooth",
+    });
+  }
+
+  async function saveQuestion(e: FormEvent) {
     e.preventDefault();
 
     if (!quizId) return;
 
     setErrorText("");
+    setSuccessText("");
+    setSaving(true);
 
+    const cleanQuestionText = questionText.trim();
     const cleanOptions = optionTexts.map((text) => text.trim());
+
+    if (!cleanQuestionText) {
+      setErrorText("Pertanyaan tidak boleh kosong.");
+      setSaving(false);
+      return;
+    }
 
     if (cleanOptions.some((text) => text.length === 0)) {
       setErrorText("Semua opsi jawaban harus diisi.");
+      setSaving(false);
+      return;
+    }
+
+    if (!Number.isFinite(timeLimit) || timeLimit < 5 || timeLimit > 300) {
+      setErrorText("Durasi soal harus berada di antara 5 sampai 300 detik.");
+      setSaving(false);
+      return;
+    }
+
+    if (!Number.isFinite(basePoints) || basePoints < 100 || basePoints > 10000) {
+      setErrorText("Poin dasar harus berada di antara 100 sampai 10000.");
+      setSaving(false);
+      return;
+    }
+
+    if (editingQuestionId) {
+      const { error: questionError } = await supabase
+        .from("questions")
+        .update({
+          question_text: cleanQuestionText,
+          time_limit_seconds: timeLimit,
+          base_points: basePoints,
+        })
+        .eq("id", editingQuestionId);
+
+      if (questionError) {
+        setErrorText(questionError.message);
+        setSaving(false);
+        return;
+      }
+
+      for (let index = 0; index < cleanOptions.length; index += 1) {
+        const existingOptionId = optionIds[index];
+
+        if (existingOptionId) {
+          const { error: optionError } = await supabase
+            .from("options")
+            .update({
+              option_text: cleanOptions[index],
+              is_correct: index === correctIndex,
+              order_no: index + 1,
+            })
+            .eq("id", existingOptionId);
+
+          if (optionError) {
+            setErrorText(optionError.message);
+            setSaving(false);
+            return;
+          }
+        } else {
+          const { error: optionError } = await supabase.from("options").insert({
+            question_id: editingQuestionId,
+            option_text: cleanOptions[index],
+            is_correct: index === correctIndex,
+            order_no: index + 1,
+          });
+
+          if (optionError) {
+            setErrorText(optionError.message);
+            setSaving(false);
+            return;
+          }
+        }
+      }
+
+      setSuccessText("Soal berhasil diperbarui.");
+      resetForm();
+      await loadData();
+      setSaving(false);
       return;
     }
 
@@ -128,7 +268,7 @@ export function QuizEditorPage() {
       .insert({
         quiz_id: quizId,
         order_no: nextOrder,
-        question_text: questionText,
+        question_text: cleanQuestionText,
         time_limit_seconds: timeLimit,
         base_points: basePoints,
       })
@@ -137,6 +277,7 @@ export function QuizEditorPage() {
 
     if (questionError) {
       setErrorText(questionError.message);
+      setSaving(false);
       return;
     }
 
@@ -153,15 +294,41 @@ export function QuizEditorPage() {
 
     if (optionsError) {
       setErrorText(optionsError.message);
+      setSaving(false);
       return;
     }
 
-    setQuestionText("");
-    setTimeLimit(20);
-    setBasePoints(1000);
-    setOptionTexts(["", "", "", ""]);
-    setCorrectIndex(0);
+    setSuccessText("Soal berhasil ditambahkan.");
+    resetForm();
+    await loadData();
+    setSaving(false);
+  }
 
+  async function deleteQuestion(question: Question) {
+    const confirmed = window.confirm(
+      `Hapus soal nomor ${question.order_no}? Opsi jawaban pada soal ini juga akan ikut terhapus.`
+    );
+
+    if (!confirmed) return;
+
+    setErrorText("");
+    setSuccessText("");
+
+    const { error } = await supabase
+      .from("questions")
+      .delete()
+      .eq("id", question.id);
+
+    if (error) {
+      setErrorText(error.message);
+      return;
+    }
+
+    if (editingQuestionId === question.id) {
+      resetForm();
+    }
+
+    setSuccessText("Soal berhasil dihapus.");
     await loadData();
   }
 
@@ -186,22 +353,53 @@ export function QuizEditorPage() {
 
         <header className="mt-6 mb-8">
           <h1 className="text-4xl font-black">Edit Soal</h1>
+
           <p className="text-slate-300 mt-2">
             Quiz: <span className="font-bold text-white">{quiz?.title}</span>
           </p>
+
           <p className="text-slate-300">
-            Room Code: <span className="font-bold text-white">{quiz?.room_code}</span>
+            Room Code:{" "}
+            <span className="font-bold text-white">{quiz?.room_code}</span>
           </p>
+
+          <p className="text-slate-300">
+            Status: <span className="font-bold text-white">{quiz?.status}</span>
+          </p>
+
+          {quiz?.status !== "waiting" && (
+            <div className="mt-5 rounded-2xl bg-yellow-500/10 border border-yellow-500/30 p-4 text-yellow-200">
+              Sebaiknya edit soal hanya saat status quiz masih{" "}
+              <span className="font-bold">waiting</span>. Jika quiz sudah live,
+              peserta yang sudah masuk halaman play bisa saja masih memakai data
+              soal yang sudah terlanjur dimuat di browser mereka.
+            </div>
+          )}
         </header>
 
         <form
-          onSubmit={addQuestion}
+          onSubmit={saveQuestion}
           className="mb-8 rounded-3xl bg-slate-900 p-6 shadow-xl"
         >
-          <h2 className="text-2xl font-black mb-5">Tambah Soal</h2>
+          <div className="flex flex-col md:flex-row md:items-center md:justify-between gap-3 mb-5">
+            <h2 className="text-2xl font-black">
+              {isEditing ? "Edit Soal" : "Tambah Soal"}
+            </h2>
+
+            {isEditing && (
+              <button
+                type="button"
+                onClick={resetForm}
+                className="rounded-2xl bg-slate-700 px-5 py-3 font-bold hover:bg-slate-600"
+              >
+                Batal Edit
+              </button>
+            )}
+          </div>
 
           <label className="block mb-4">
             <span className="block mb-2 text-slate-300">Pertanyaan</span>
+
             <textarea
               className="w-full rounded-2xl bg-slate-800 border border-slate-700 p-4 outline-none focus:border-purple-500"
               rows={3}
@@ -214,7 +412,10 @@ export function QuizEditorPage() {
 
           <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mb-4">
             <label>
-              <span className="block mb-2 text-slate-300">Durasi soal, detik</span>
+              <span className="block mb-2 text-slate-300">
+                Durasi soal, detik
+              </span>
+
               <input
                 className="w-full rounded-2xl bg-slate-800 border border-slate-700 p-4 outline-none focus:border-purple-500"
                 type="number"
@@ -228,6 +429,7 @@ export function QuizEditorPage() {
 
             <label>
               <span className="block mb-2 text-slate-300">Poin dasar</span>
+
               <input
                 className="w-full rounded-2xl bg-slate-800 border border-slate-700 p-4 outline-none focus:border-purple-500"
                 type="number"
@@ -247,6 +449,7 @@ export function QuizEditorPage() {
                   type="radio"
                   checked={correctIndex === index}
                   onChange={() => setCorrectIndex(index)}
+                  aria-label={`Jadikan opsi ${index + 1} sebagai jawaban benar`}
                 />
 
                 <input
@@ -274,8 +477,21 @@ export function QuizEditorPage() {
             </div>
           )}
 
-          <button className="rounded-2xl bg-purple-600 px-7 py-4 font-bold hover:bg-purple-700">
-            Simpan Soal
+          {successText && (
+            <div className="mb-5 rounded-2xl bg-green-500/10 border border-green-500/30 p-4 text-green-300">
+              {successText}
+            </div>
+          )}
+
+          <button
+            disabled={saving}
+            className="rounded-2xl bg-purple-600 px-7 py-4 font-bold hover:bg-purple-700 disabled:opacity-60"
+          >
+            {saving
+              ? "Menyimpan..."
+              : isEditing
+              ? "Update Soal"
+              : "Simpan Soal"}
           </button>
         </form>
 
@@ -289,20 +505,45 @@ export function QuizEditorPage() {
           )}
 
           {questions.map((question) => {
-            const opts = options.filter((option) => option.question_id === question.id);
+            const questionOptions = options
+              .filter((option) => option.question_id === question.id)
+              .sort((a, b) => a.order_no - b.order_no);
 
             return (
               <article key={question.id} className="rounded-3xl bg-slate-900 p-6">
-                <h3 className="text-xl font-black mb-2">
-                  {question.order_no}. {question.question_text}
-                </h3>
+                <div className="flex flex-col md:flex-row md:items-start md:justify-between gap-4 mb-4">
+                  <div>
+                    <h3 className="text-xl font-black mb-2">
+                      {question.order_no}. {question.question_text}
+                    </h3>
 
-                <p className="text-slate-400 mb-4">
-                  Durasi: {question.time_limit_seconds} detik · Poin: {question.base_points}
-                </p>
+                    <p className="text-slate-400">
+                      Durasi: {question.time_limit_seconds} detik · Poin:{" "}
+                      {question.base_points}
+                    </p>
+                  </div>
+
+                  <div className="flex flex-wrap gap-3">
+                    <button
+                      type="button"
+                      onClick={() => startEditQuestion(question)}
+                      className="rounded-2xl bg-blue-600 px-5 py-3 font-bold hover:bg-blue-700"
+                    >
+                      Edit
+                    </button>
+
+                    <button
+                      type="button"
+                      onClick={() => deleteQuestion(question)}
+                      className="rounded-2xl bg-red-700 px-5 py-3 font-bold hover:bg-red-800"
+                    >
+                      Hapus
+                    </button>
+                  </div>
+                </div>
 
                 <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-                  {opts.map((option) => (
+                  {questionOptions.map((option) => (
                     <div
                       key={option.id}
                       className={[
@@ -313,6 +554,7 @@ export function QuizEditorPage() {
                       ].join(" ")}
                     >
                       {option.option_text}
+
                       {option.is_correct && (
                         <span className="ml-2 text-green-300 font-bold">
                           ✓ benar
