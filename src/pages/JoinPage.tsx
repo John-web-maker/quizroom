@@ -3,6 +3,24 @@ import type { FormEvent } from "react";
 import { useNavigate, useParams } from "react-router-dom";
 import { supabase } from "../lib/supabase";
 
+function getOrCreateDeviceId() {
+  const storageKey = "quizroom_device_id";
+  const existingDeviceId = localStorage.getItem(storageKey);
+
+  if (existingDeviceId) {
+    return existingDeviceId;
+  }
+
+  const newDeviceId =
+    typeof crypto !== "undefined" && "randomUUID" in crypto
+      ? crypto.randomUUID()
+      : `device-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+
+  localStorage.setItem(storageKey, newDeviceId);
+
+  return newDeviceId;
+}
+
 export function JoinPage() {
   const { roomCode } = useParams();
   const navigate = useNavigate();
@@ -17,9 +35,12 @@ export function JoinPage() {
     setErrorText("");
     setLoading(true);
 
+    const deviceId = getOrCreateDeviceId();
+
     const { data, error } = await supabase.rpc("join_room", {
       p_room_code: roomCode,
       p_display_name: displayName,
+      p_device_id: deviceId,
     });
 
     setLoading(false);
@@ -33,7 +54,7 @@ export function JoinPage() {
     sessionStorage.setItem("quiz_id", data.quiz_id);
     sessionStorage.setItem("room_code", data.room_code);
     sessionStorage.setItem("session_token", data.session_token);
-    sessionStorage.setItem("participant_name", displayName);
+    sessionStorage.setItem("participant_name", displayName.trim());
 
     navigate(`/lobby/${data.room_code}`);
   }
@@ -45,10 +66,12 @@ export function JoinPage() {
         className="w-full max-w-md rounded-3xl bg-slate-900 p-8 shadow-xl"
       >
         <h1 className="text-3xl font-black mb-2">Masuk Kuis</h1>
+
         <p className="text-slate-300 mb-6">Room code: {roomCode}</p>
 
         <label className="block mb-5">
           <span className="block mb-2 text-slate-300">Nama peserta</span>
+
           <input
             className="w-full rounded-2xl bg-slate-800 border border-slate-700 p-4 outline-none focus:border-purple-500"
             placeholder="Tulis nama kamu"
@@ -58,6 +81,11 @@ export function JoinPage() {
             maxLength={40}
           />
         </label>
+
+        <div className="mb-5 rounded-2xl bg-slate-800/70 border border-slate-700 p-4 text-sm text-slate-300">
+          Satu perangkat hanya dapat digunakan untuk satu peserta dalam room
+          yang sama. Sistem akan menyimpan ID perangkat di browser ini.
+        </div>
 
         {errorText && (
           <div className="mb-5 rounded-2xl bg-red-500/10 border border-red-500/30 p-4 text-red-300">
