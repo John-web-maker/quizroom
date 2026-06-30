@@ -79,7 +79,7 @@ export function PlayPage() {
     try {
       await document.documentElement.requestFullscreen();
     } catch {
-      // Kalau browser menolak fullscreen, kuis tetap lanjut.
+      // Jika browser menolak fullscreen, kuis tetap lanjut.
     }
 
     setSafeMode(true);
@@ -146,6 +146,7 @@ export function PlayPage() {
           nextFirstRow.time_limit_seconds
         )
       );
+
       setAnswered(false);
       setAnswering(false);
       setMessage("");
@@ -160,7 +161,10 @@ export function PlayPage() {
     const participantId = sessionStorage.getItem("participant_id");
     const sessionToken = sessionStorage.getItem("session_token");
 
-    if (!participantId || !sessionToken) return;
+    if (!participantId || !sessionToken) {
+      setMessage("Session peserta tidak ditemukan. Silakan join ulang.");
+      return;
+    }
 
     setAnswering(true);
 
@@ -185,11 +189,7 @@ export function PlayPage() {
     if (data.already_answered) {
       setMessage("Kamu sudah menjawab soal ini.");
     } else {
-      setMessage(
-        data.is_correct
-          ? `Benar! +${data.points_awarded} poin`
-          : "Belum tepat."
-      );
+      setMessage("Jawaban tersimpan. Lanjut ke soal berikutnya...");
     }
 
     window.setTimeout(async () => {
@@ -213,7 +213,10 @@ export function PlayPage() {
     const participantId = sessionStorage.getItem("participant_id");
     const sessionToken = sessionStorage.getItem("session_token");
 
-    if (!participantId || !sessionToken) return;
+    if (!participantId || !sessionToken) {
+      setMessage("Session peserta tidak ditemukan. Silakan join ulang.");
+      return;
+    }
 
     advanceLockRef.current = true;
     setMessage("Waktu habis. Lanjut ke soal berikutnya...");
@@ -252,14 +255,16 @@ export function PlayPage() {
     loadActiveQuestion();
 
     const pollId = window.setInterval(() => {
-      loadActiveQuestion(true);
+      if (!answering && !answered && !transitioning) {
+        loadActiveQuestion(true);
+      }
     }, 3000);
 
     return () => {
       cleanupAntiCheat();
       window.clearInterval(pollId);
     };
-  }, [safeMode, roomCode]);
+  }, [safeMode, roomCode, answering, answered, transitioning]);
 
   useEffect(() => {
     if (!safeMode) return;
