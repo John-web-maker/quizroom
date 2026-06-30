@@ -14,6 +14,12 @@ type Quiz = {
   created_at?: string;
 };
 
+type DuplicateQuizResult = {
+  quiz_id: string;
+  title: string;
+  room_code: string;
+};
+
 function generateRoomCode() {
   const alphabet = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
   let code = "";
@@ -38,6 +44,7 @@ export function AdminDashboardPage() {
   const [successText, setSuccessText] = useState("");
   const [loading, setLoading] = useState(true);
   const [creating, setCreating] = useState(false);
+  const [workingQuizId, setWorkingQuizId] = useState<string | null>(null);
 
   async function loadQuizzes() {
     setLoading(true);
@@ -123,6 +130,7 @@ export function AdminDashboardPage() {
   async function startQuiz(quizId: string) {
     setErrorText("");
     setSuccessText("");
+    setWorkingQuizId(quizId);
 
     const { error } = await supabase
       .from("quizzes")
@@ -131,6 +139,8 @@ export function AdminDashboardPage() {
         current_question_order: 1,
       })
       .eq("id", quizId);
+
+    setWorkingQuizId(null);
 
     if (error) {
       setErrorText(error.message);
@@ -150,10 +160,13 @@ export function AdminDashboardPage() {
 
     setErrorText("");
     setSuccessText("");
+    setWorkingQuizId(quizId);
 
     const { error } = await supabase.rpc("finish_quiz", {
       p_quiz_id: quizId,
     });
+
+    setWorkingQuizId(null);
 
     if (error) {
       setErrorText(error.message);
@@ -173,10 +186,13 @@ export function AdminDashboardPage() {
 
     setErrorText("");
     setSuccessText("");
+    setWorkingQuizId(quizId);
 
     const { error } = await supabase.rpc("reset_quiz_session", {
       p_quiz_id: quizId,
     });
+
+    setWorkingQuizId(null);
 
     if (error) {
       setErrorText(error.message);
@@ -187,26 +203,62 @@ export function AdminDashboardPage() {
     await loadQuizzes();
   }
 
-  async function deleteFinishedQuiz(quizId: string, quizTitle: string) {
+  async function deleteQuiz(quizId: string, quizTitle: string) {
     const confirmed = window.confirm(
-      `Hapus quiz "${quizTitle}" secara permanen? Data soal, peserta, jawaban, dan log cheating juga akan dihapus.`
+      `Hapus quiz "${quizTitle}" secara permanen? Semua data soal, peserta, jawaban, dan log cheating juga akan dihapus.`
     );
 
     if (!confirmed) return;
 
     setErrorText("");
     setSuccessText("");
+    setWorkingQuizId(quizId);
 
-    const { error } = await supabase.rpc("delete_finished_quiz", {
+    const { error } = await supabase.rpc("delete_quiz", {
       p_quiz_id: quizId,
     });
+
+    setWorkingQuizId(null);
 
     if (error) {
       setErrorText(error.message);
       return;
     }
 
-    setSuccessText("Quiz selesai berhasil dihapus.");
+    setSuccessText("Quiz berhasil dihapus.");
+    await loadQuizzes();
+  }
+
+  async function duplicateQuiz(quizId: string, quizTitle: string) {
+    const confirmed = window.confirm(
+      `Duplikat quiz "${quizTitle}"? Sistem akan membuat quiz baru dengan soal dan jawaban yang sama, tetapi room code baru.`
+    );
+
+    if (!confirmed) return;
+
+    setErrorText("");
+    setSuccessText("");
+    setWorkingQuizId(quizId);
+
+    const { data, error } = await supabase.rpc("duplicate_quiz", {
+      p_quiz_id: quizId,
+    });
+
+    setWorkingQuizId(null);
+
+    if (error) {
+      setErrorText(error.message);
+      return;
+    }
+
+    const result = data as DuplicateQuizResult | null;
+
+    setSuccessText(
+      result
+        ? `Quiz berhasil diduplikasi: ${result.title} dengan kode ${result.room_code}.`
+        : "Quiz berhasil diduplikasi."
+    );
+
     await loadQuizzes();
   }
 
@@ -305,6 +357,7 @@ export function AdminDashboardPage() {
             const roomCode = quiz.room_code ?? "-";
             const participantJoinUrl = `${getBaseUrl()}#/join/${roomCode}`;
             const generalJoinUrl = `${getBaseUrl()}#/join`;
+            const isWorking = workingQuizId === quiz.id;
 
             return (
               <article
@@ -338,23 +391,34 @@ export function AdminDashboardPage() {
                   <div className="flex flex-wrap gap-3">
                     <button
                       onClick={() => startQuiz(quiz.id)}
-                      className="rounded-2xl bg-green-600 px-5 py-3 font-bold hover:bg-green-700"
+                      disabled={isWorking || quiz.status !== "waiting"}
+                      className="rounded-2xl bg-green-600 px-5 py-3 font-bold hover:bg-green-700 disabled:opacity-50"
                     >
                       Mulai
                     </button>
 
                     <button
                       onClick={() => finishQuiz(quiz.id)}
-                      className="rounded-2xl bg-red-600 px-5 py-3 font-bold hover:bg-red-700"
+                      disabled={isWorking || quiz.status === "ended"}
+                      className="rounded-2xl bg-red-600 px-5 py-3 font-bold hover:bg-red-700 disabled:opacity-50"
                     >
                       Selesaikan
                     </button>
 
                     <button
                       onClick={() => resetSession(quiz.id)}
-                      className="rounded-2xl bg-slate-700 px-5 py-3 font-bold hover:bg-slate-600"
+                      disabled={isWorking}
+                      className="rounded-2xl bg-slate-700 px-5 py-3 font-bold hover:bg-slate-600 disabled:opacity-50"
                     >
                       Reset Sesi
+                    </button>
+
+                    <button
+                      onClick={() => duplicateQuiz(quiz.id, quiz.title)}
+                      disabled={isWorking}
+                      className="rounded-2xl bg-indigo-600 px-5 py-3 font-bold hover:bg-indigo-700 disabled:opacity-50"
+                    >
+                      Duplikat Quiz
                     </button>
 
                     <Link
@@ -385,14 +449,13 @@ export function AdminDashboardPage() {
                       Preview Join
                     </Link>
 
-                    {quiz.status === "ended" && (
-                      <button
-                        onClick={() => deleteFinishedQuiz(quiz.id, quiz.title)}
-                        className="rounded-2xl bg-red-950 px-5 py-3 font-bold hover:bg-red-900"
-                      >
-                        Hapus Quiz
-                      </button>
-                    )}
+                    <button
+                      onClick={() => deleteQuiz(quiz.id, quiz.title)}
+                      disabled={isWorking}
+                      className="rounded-2xl bg-red-950 px-5 py-3 font-bold hover:bg-red-900 disabled:opacity-50"
+                    >
+                      Hapus Quiz
+                    </button>
                   </div>
                 </div>
 
@@ -449,6 +512,12 @@ export function AdminDashboardPage() {
                   </div>
                 </div>
 
+                {quiz.status === "waiting" && (
+                  <div className="mt-4 rounded-2xl bg-slate-800/60 border border-slate-700 p-4 text-slate-300">
+                    Quiz belum dimulai. Peserta masih dapat bergabung.
+                  </div>
+                )}
+
                 {quiz.status === "live" && (
                   <div className="mt-4 rounded-2xl bg-yellow-500/10 border border-yellow-500/30 p-4 text-yellow-200">
                     Quiz sedang berjalan. Peserta baru tidak dapat bergabung.
@@ -458,8 +527,6 @@ export function AdminDashboardPage() {
                 {quiz.status === "ended" && (
                   <div className="mt-4 rounded-2xl bg-green-500/10 border border-green-500/30 p-4 text-green-200">
                     Quiz sudah selesai. Podium dan hasil final sudah tersedia.
-                    Kamu bisa menghapus quiz ini jika data sudah tidak
-                    diperlukan.
                   </div>
                 )}
               </article>
