@@ -79,7 +79,7 @@ export function PlayPage() {
     try {
       await document.documentElement.requestFullscreen();
     } catch {
-      // Jika browser menolak fullscreen, kuis tetap lanjut.
+      // Browser bisa menolak fullscreen. Kuis tetap lanjut.
     }
 
     setSafeMode(true);
