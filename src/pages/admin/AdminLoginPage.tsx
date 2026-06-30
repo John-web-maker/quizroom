@@ -9,6 +9,8 @@ export function AdminLoginPage() {
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
 
+  const [showPassword, setShowPassword] = useState(false);
+
   const [errorText, setErrorText] = useState("");
   const [loading, setLoading] = useState(false);
 
@@ -63,14 +65,24 @@ export function AdminLoginPage() {
         <label className="block mb-5">
           <span className="block mb-2 text-slate-300">Password</span>
 
-          <input
-            className="w-full rounded-2xl bg-slate-800 border border-slate-700 p-4 outline-none focus:border-purple-500"
-            type="password"
-            placeholder="Masukkan password"
-            value={password}
-            onChange={(e) => setPassword(e.target.value)}
-            required
-          />
+          <div className="flex rounded-2xl bg-slate-800 border border-slate-700 overflow-hidden focus-within:border-purple-500">
+            <input
+              className="flex-1 bg-transparent p-4 outline-none"
+              type={showPassword ? "text" : "password"}
+              placeholder="Masukkan password"
+              value={password}
+              onChange={(e) => setPassword(e.target.value)}
+              required
+            />
+
+            <button
+              type="button"
+              onClick={() => setShowPassword((current) => !current)}
+              className="px-4 font-bold text-purple-300 hover:bg-slate-700"
+            >
+              {showPassword ? "Sembunyikan" : "Lihat"}
+            </button>
+          </div>
         </label>
 
         {errorText && (
