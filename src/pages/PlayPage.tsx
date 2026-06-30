@@ -3,27 +3,24 @@ import { useNavigate, useParams } from "react-router-dom";
 import { setupAntiCheat } from "../lib/antiCheat";
 import { supabase } from "../lib/supabase";
 
-type QuestionRow = {
+type ActiveQuestionRow = {
   quiz_status: string;
-  question_id: string;
-  order_no: number;
-  question_text: string;
-  time_limit_seconds: number;
-  option_id: string;
-  option_text: string;
-  option_order: number;
+  participant_status: string;
+  current_question_position: number;
+  total_questions: number;
+  question_started_at: string | null;
+  question_id: string | null;
+  question_text: string | null;
+  time_limit_seconds: number | null;
+  option_id: string | null;
+  option_text: string | null;
+  option_order: number | null;
 };
 
-type QuizQuestion = {
+type Option = {
   id: string;
-  orderNo: number;
   text: string;
-  timeLimit: number;
-  options: {
-    id: string;
-    text: string;
-    order: number;
-  }[];
+  order: number;
 };
 
 export function PlayPage() {
@@ -31,66 +28,64 @@ export function PlayPage() {
   const navigate = useNavigate();
 
   const [safeMode, setSafeMode] = useState(false);
-  const [quizStatus, setQuizStatus] = useState<string>("waiting");
-  const [questions, setQuestions] = useState<QuizQuestion[]>([]);
-  const [currentIndex, setCurrentIndex] = useState(0);
+  const [rows, setRows] = useState<ActiveQuestionRow[]>([]);
   const [secondsLeft, setSecondsLeft] = useState(0);
-  const [questionStart, setQuestionStart] = useState(Date.now());
   const [message, setMessage] = useState("");
   const [answering, setAnswering] = useState(false);
   const [answered, setAnswered] = useState(false);
   const [transitioning, setTransitioning] = useState(false);
   const [loading, setLoading] = useState(false);
 
-  const transitionLockRef = useRef(false);
+  const advanceLockRef = useRef(false);
 
-  const currentQuestion = questions[currentIndex];
+  const firstRow = rows[0];
 
-  const progressText = useMemo(() => {
-    if (!currentQuestion) return "";
-    return `Soal ${currentIndex + 1} dari ${questions.length}`;
-  }, [currentQuestion, currentIndex, questions.length]);
+  const options = useMemo<Option[]>(() => {
+    return rows
+      .filter((row) => row.option_id && row.option_text)
+      .map((row) => ({
+        id: row.option_id as string,
+        text: row.option_text as string,
+        order: row.option_order ?? 0,
+      }))
+      .sort((a, b) => a.order - b.order);
+  }, [rows]);
+
+  const questionId = firstRow?.question_id ?? null;
+  const questionText = firstRow?.question_text ?? "";
+  const quizStatus = firstRow?.quiz_status ?? "waiting";
+  const participantStatus = firstRow?.participant_status ?? "waiting";
+  const totalQuestions = firstRow?.total_questions ?? 0;
+  const currentPosition = firstRow?.current_question_position ?? 1;
+  const timeLimit = firstRow?.time_limit_seconds ?? 0;
+  const questionStartedAt = firstRow?.question_started_at ?? null;
+
+  const progressText =
+    questionId && totalQuestions > 0
+      ? `Soal ${currentPosition} dari ${totalQuestions}`
+      : "";
+
+  function computeSecondsLeft(startedAt: string | null, limit: number | null) {
+    if (!startedAt || !limit) return 0;
+
+    const startedMs = new Date(startedAt).getTime();
+    const endMs = startedMs + limit * 1000;
+    const remaining = Math.ceil((endMs - Date.now()) / 1000);
+
+    return Math.max(remaining, 0);
+  }
 
   async function enterSafeMode() {
     try {
       await document.documentElement.requestFullscreen();
     } catch {
-      // Browser bisa menolak fullscreen. Tetap lanjut, tapi anti-cheat akan tetap mencatat fullscreen exit.
+      // Kalau browser menolak fullscreen, kuis tetap lanjut.
     }
 
     setSafeMode(true);
   }
 
-  function buildQuestions(rows: QuestionRow[]) {
-    const map = new Map<string, QuizQuestion>();
-
-    for (const row of rows) {
-      if (!map.has(row.question_id)) {
-        map.set(row.question_id, {
-          id: row.question_id,
-          orderNo: row.order_no,
-          text: row.question_text,
-          timeLimit: row.time_limit_seconds,
-          options: [],
-        });
-      }
-
-      map.get(row.question_id)?.options.push({
-        id: row.option_id,
-        text: row.option_text,
-        order: row.option_order,
-      });
-    }
-
-    return Array.from(map.values())
-      .sort((a, b) => a.orderNo - b.orderNo)
-      .map((question) => ({
-        ...question,
-        options: question.options.sort((a, b) => a.order - b.order),
-      }));
-  }
-
-  async function loadQuiz() {
+  async function loadActiveQuestion(silent = false) {
     const participantId = sessionStorage.getItem("participant_id");
     const sessionToken = sessionStorage.getItem("session_token");
 
@@ -99,66 +94,68 @@ export function PlayPage() {
       return;
     }
 
-    setLoading(true);
+    if (!silent) {
+      setLoading(true);
+    }
 
     const { data, error } = await supabase.rpc(
-      "get_quiz_questions_for_participant",
+      "get_active_question_for_participant",
       {
         p_participant_id: participantId,
         p_session_token: sessionToken,
       }
     );
 
-    setLoading(false);
+    if (!silent) {
+      setLoading(false);
+    }
 
     if (error) {
       setMessage(error.message);
       return;
     }
 
-    const rows = (data ?? []) as QuestionRow[];
+    const nextRows = (data ?? []) as ActiveQuestionRow[];
 
-    if (rows.length === 0) {
-      setMessage("Soal belum tersedia. Minta admin membuat soal terlebih dahulu.");
+    setRows(nextRows);
+
+    const nextFirstRow = nextRows[0];
+
+    if (!nextFirstRow) {
+      setMessage("Soal belum tersedia.");
       return;
     }
 
-    setQuizStatus(rows[0].quiz_status);
+    if (nextFirstRow.quiz_status === "ended") {
+      navigate(`/result/${roomCode}`);
+      return;
+    }
 
-    const parsedQuestions = buildQuestions(rows);
+    if (
+      nextFirstRow.participant_status === "finished" ||
+      (nextFirstRow.quiz_status === "live" && !nextFirstRow.question_id)
+    ) {
+      navigate(`/result/${roomCode}`);
+      return;
+    }
 
-    setQuestions(parsedQuestions);
-    setCurrentIndex(0);
-    setSecondsLeft(parsedQuestions[0]?.timeLimit ?? 0);
-    setQuestionStart(Date.now());
-    setAnswered(false);
-    setAnswering(false);
-    setTransitioning(false);
-    setMessage("");
-    transitionLockRef.current = false;
-  }
-
-  async function pollQuizStatus() {
-    const participantId = sessionStorage.getItem("participant_id");
-    const sessionToken = sessionStorage.getItem("session_token");
-
-    if (!participantId || !sessionToken) return;
-
-    const { data } = await supabase.rpc("get_quiz_questions_for_participant", {
-      p_participant_id: participantId,
-      p_session_token: sessionToken,
-    });
-
-    const rows = (data ?? []) as QuestionRow[];
-
-    if (rows.length > 0) {
-      setQuizStatus(rows[0].quiz_status);
+    if (nextFirstRow.question_id) {
+      setSecondsLeft(
+        computeSecondsLeft(
+          nextFirstRow.question_started_at,
+          nextFirstRow.time_limit_seconds
+        )
+      );
+      setAnswered(false);
+      setAnswering(false);
+      setMessage("");
+      advanceLockRef.current = false;
     }
   }
 
   async function submitAnswer(optionId: string) {
-    if (!currentQuestion) return;
-    if (answered || answering || transitionLockRef.current) return;
+    if (!questionId) return;
+    if (answered || answering || advanceLockRef.current) return;
 
     const participantId = sessionStorage.getItem("participant_id");
     const sessionToken = sessionStorage.getItem("session_token");
@@ -167,13 +164,11 @@ export function PlayPage() {
 
     setAnswering(true);
 
-    const answerMs = Date.now() - questionStart;
-
     const { data, error } = await supabase.rpc("submit_answer", {
       p_participant_id: participantId,
-      p_question_id: currentQuestion.id,
+      p_question_id: questionId,
       p_option_id: optionId,
-      p_answer_ms: answerMs,
+      p_answer_ms: 0,
       p_session_token: sessionToken,
     });
 
@@ -185,6 +180,7 @@ export function PlayPage() {
     }
 
     setAnswered(true);
+    advanceLockRef.current = true;
 
     if (data.already_answered) {
       setMessage("Kamu sudah menjawab soal ini.");
@@ -196,49 +192,56 @@ export function PlayPage() {
       );
     }
 
-    window.setTimeout(() => {
-      goToNextQuestion();
-    }, 900);
-  }
-
-  function goToNextQuestion() {
-    if (transitionLockRef.current) return;
-
-    transitionLockRef.current = true;
-    setTransitioning(true);
-
     window.setTimeout(async () => {
-      const nextIndex = currentIndex + 1;
-
-      if (nextIndex >= questions.length) {
-        await finishParticipant();
+      if (data.completed) {
         navigate(`/result/${roomCode}`);
         return;
       }
 
-      const nextQuestion = questions[nextIndex];
+      setTransitioning(true);
 
-      setCurrentIndex(nextIndex);
-      setSecondsLeft(nextQuestion.timeLimit);
-      setQuestionStart(Date.now());
-      setAnswered(false);
-      setAnswering(false);
-      setMessage("");
-      setTransitioning(false);
-      transitionLockRef.current = false;
-    }, 350);
+      window.setTimeout(async () => {
+        await loadActiveQuestion();
+        setTransitioning(false);
+      }, 300);
+    }, 900);
   }
 
-  async function finishParticipant() {
+  async function skipQuestionBecauseTimeIsUp() {
+    if (advanceLockRef.current) return;
+
     const participantId = sessionStorage.getItem("participant_id");
     const sessionToken = sessionStorage.getItem("session_token");
 
     if (!participantId || !sessionToken) return;
 
-    await supabase.rpc("finish_participant", {
+    advanceLockRef.current = true;
+    setMessage("Waktu habis. Lanjut ke soal berikutnya...");
+
+    const { data, error } = await supabase.rpc("skip_current_question", {
       p_participant_id: participantId,
       p_session_token: sessionToken,
     });
+
+    if (error) {
+      advanceLockRef.current = false;
+      setMessage(error.message);
+      return;
+    }
+
+    window.setTimeout(async () => {
+      if (data.completed) {
+        navigate(`/result/${roomCode}`);
+        return;
+      }
+
+      setTransitioning(true);
+
+      window.setTimeout(async () => {
+        await loadActiveQuestion();
+        setTransitioning(false);
+      }, 300);
+    }, 500);
   }
 
   useEffect(() => {
@@ -246,45 +249,46 @@ export function PlayPage() {
 
     const cleanupAntiCheat = setupAntiCheat(roomCode);
 
-    loadQuiz();
+    loadActiveQuestion();
 
-    const statusInterval = window.setInterval(() => {
-      pollQuizStatus();
+    const pollId = window.setInterval(() => {
+      loadActiveQuestion(true);
     }, 3000);
 
     return () => {
       cleanupAntiCheat();
-      window.clearInterval(statusInterval);
+      window.clearInterval(pollId);
     };
   }, [safeMode, roomCode]);
 
   useEffect(() => {
     if (!safeMode) return;
-    if (!currentQuestion) return;
     if (quizStatus !== "live") return;
+    if (!questionId) return;
+    if (!questionStartedAt) return;
     if (answered) return;
     if (transitioning) return;
 
-    const timer = window.setInterval(() => {
-      setSecondsLeft((prev) => {
-        if (prev <= 1) {
-          window.clearInterval(timer);
-          goToNextQuestion();
-          return 0;
-        }
+    const timerId = window.setInterval(() => {
+      const nextSecondsLeft = computeSecondsLeft(questionStartedAt, timeLimit);
 
-        return prev - 1;
-      });
-    }, 1000);
+      setSecondsLeft(nextSecondsLeft);
 
-    return () => window.clearInterval(timer);
+      if (nextSecondsLeft <= 0) {
+        window.clearInterval(timerId);
+        skipQuestionBecauseTimeIsUp();
+      }
+    }, 300);
+
+    return () => window.clearInterval(timerId);
   }, [
     safeMode,
-    currentQuestion?.id,
     quizStatus,
+    questionId,
+    questionStartedAt,
+    timeLimit,
     answered,
     transitioning,
-    currentIndex,
   ]);
 
   if (!safeMode) {
@@ -348,7 +352,7 @@ export function PlayPage() {
           </p>
 
           <button
-            onClick={loadQuiz}
+            onClick={() => loadActiveQuestion()}
             className="rounded-2xl bg-slate-700 px-6 py-3 font-bold hover:bg-slate-600"
           >
             Muat Ulang
@@ -362,28 +366,44 @@ export function PlayPage() {
     );
   }
 
-  if (loading || !currentQuestion) {
+  if (loading || participantStatus === "finished") {
     return (
       <main className="min-h-screen bg-slate-950 text-white flex items-center justify-center p-6">
         <section className="max-w-xl rounded-3xl bg-slate-900 p-8 text-center shadow-xl">
           <h1 className="text-4xl font-black mb-4">Memuat Soal</h1>
 
           <p className="text-slate-300">
-            Sistem sedang mengambil soal dari database.
+            Sistem sedang mengambil soal aktif dari database.
+          </p>
+        </section>
+      </main>
+    );
+  }
+
+  if (!questionId) {
+    return (
+      <main className="min-h-screen bg-slate-950 text-white flex items-center justify-center p-6">
+        <section className="max-w-xl rounded-3xl bg-slate-900 p-8 text-center shadow-xl">
+          <h1 className="text-4xl font-black mb-4">Soal Tidak Tersedia</h1>
+
+          <p className="text-slate-300 mb-6">
+            Admin belum membuat soal atau peserta sudah menyelesaikan seluruh
+            soal.
           </p>
 
-          {message && (
-            <p className="mt-5 text-red-300 font-bold">{message}</p>
-          )}
+          <button
+            onClick={() => navigate(`/result/${roomCode}`)}
+            className="rounded-2xl bg-purple-600 px-7 py-4 font-bold hover:bg-purple-700"
+          >
+            Lihat Hasil
+          </button>
         </section>
       </main>
     );
   }
 
   const progressPercentage =
-    currentQuestion.timeLimit > 0
-      ? (secondsLeft / currentQuestion.timeLimit) * 100
-      : 0;
+    timeLimit > 0 ? (secondsLeft / timeLimit) * 100 : 0;
 
   return (
     <main className="min-h-screen bg-slate-950 text-white p-6 flex items-center justify-center">
@@ -397,6 +417,7 @@ export function PlayPage() {
       >
         <div className="flex items-center justify-between mb-4">
           <p className="text-slate-400">Room: {roomCode}</p>
+
           <p className="rounded-full bg-purple-500/20 px-4 py-2 text-purple-200 font-bold">
             {secondsLeft}s
           </p>
@@ -412,11 +433,11 @@ export function PlayPage() {
         <p className="text-slate-400 mb-3">{progressText}</p>
 
         <h1 className="text-3xl md:text-4xl font-black mb-8">
-          {currentQuestion.text}
+          {questionText}
         </h1>
 
         <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-          {currentQuestion.options.map((option) => (
+          {options.map((option) => (
             <button
               key={option.id}
               disabled={answered || answering}
