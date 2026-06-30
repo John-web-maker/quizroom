@@ -187,6 +187,29 @@ export function AdminDashboardPage() {
     await loadQuizzes();
   }
 
+  async function deleteFinishedQuiz(quizId: string, quizTitle: string) {
+    const confirmed = window.confirm(
+      `Hapus quiz "${quizTitle}" secara permanen? Data soal, peserta, jawaban, dan log cheating juga akan dihapus.`
+    );
+
+    if (!confirmed) return;
+
+    setErrorText("");
+    setSuccessText("");
+
+    const { error } = await supabase.rpc("delete_finished_quiz", {
+      p_quiz_id: quizId,
+    });
+
+    if (error) {
+      setErrorText(error.message);
+      return;
+    }
+
+    setSuccessText("Quiz selesai berhasil dihapus.");
+    await loadQuizzes();
+  }
+
   async function logout() {
     await supabase.auth.signOut();
     navigate("/admin/login");
@@ -196,8 +219,10 @@ export function AdminDashboardPage() {
     try {
       await navigator.clipboard.writeText(text);
       setSuccessText("Berhasil disalin.");
+      setErrorText("");
     } catch {
       setErrorText("Gagal menyalin. Copy manual dari teks yang tersedia.");
+      setSuccessText("");
     }
   }
 
@@ -359,6 +384,15 @@ export function AdminDashboardPage() {
                     >
                       Preview Join
                     </Link>
+
+                    {quiz.status === "ended" && (
+                      <button
+                        onClick={() => deleteFinishedQuiz(quiz.id, quiz.title)}
+                        className="rounded-2xl bg-red-950 px-5 py-3 font-bold hover:bg-red-900"
+                      >
+                        Hapus Quiz
+                      </button>
+                    )}
                   </div>
                 </div>
 
@@ -424,6 +458,8 @@ export function AdminDashboardPage() {
                 {quiz.status === "ended" && (
                   <div className="mt-4 rounded-2xl bg-green-500/10 border border-green-500/30 p-4 text-green-200">
                     Quiz sudah selesai. Podium dan hasil final sudah tersedia.
+                    Kamu bisa menghapus quiz ini jika data sudah tidak
+                    diperlukan.
                   </div>
                 )}
               </article>
