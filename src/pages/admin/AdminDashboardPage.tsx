@@ -5,15 +5,28 @@ import { supabase } from "../../lib/supabase";
 
 type Quiz = {
   id: string;
+  owner_id: string;
   title: string;
+  game_mode: string | null;
   status: string;
   room_code: string | null;
-  current_question_order: number;
-  created_at: string;
+  current_question_order: number | null;
+  created_at?: string;
 };
 
-function makeRoomCode() {
-  return Math.random().toString(36).slice(2, 8).toUpperCase();
+function generateRoomCode() {
+  const alphabet = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
+  let code = "";
+
+  for (let i = 0; i < 6; i += 1) {
+    code += alphabet[Math.floor(Math.random() * alphabet.length)];
+  }
+
+  return code;
+}
+
+function getBaseUrl() {
+  return `${window.location.origin}${window.location.pathname}`;
 }
 
 export function AdminDashboardPage() {
@@ -22,9 +35,11 @@ export function AdminDashboardPage() {
   const [quizzes, setQuizzes] = useState<Quiz[]>([]);
   const [title, setTitle] = useState("");
   const [errorText, setErrorText] = useState("");
+  const [successText, setSuccessText] = useState("");
   const [loading, setLoading] = useState(true);
+  const [creating, setCreating] = useState(false);
 
-  async function checkSessionAndLoad() {
+  async function loadQuizzes() {
     setLoading(true);
     setErrorText("");
 
@@ -38,34 +53,38 @@ export function AdminDashboardPage() {
       return;
     }
 
-    await loadQuizzes();
-    setLoading(false);
-  }
-
-  async function loadQuizzes() {
     const { data, error } = await supabase
       .from("quizzes")
-      .select("id, title, status, room_code, current_question_order, created_at")
+      .select(
+        "id, owner_id, title, game_mode, status, room_code, current_question_order, created_at"
+      )
+      .eq("owner_id", user.id)
       .order("created_at", { ascending: false });
 
     if (error) {
       setErrorText(error.message);
+      setLoading(false);
       return;
     }
 
-    setQuizzes(data ?? []);
+    setQuizzes((data ?? []) as Quiz[]);
+    setLoading(false);
   }
 
   async function createQuiz(e: FormEvent) {
     e.preventDefault();
+
     setErrorText("");
+    setSuccessText("");
 
     const cleanTitle = title.trim();
 
     if (!cleanTitle) {
-      setErrorText("Judul quiz tidak boleh kosong.");
+      setErrorText("Judul quiz wajib diisi.");
       return;
     }
+
+    setCreating(true);
 
     const {
       data: { user },
@@ -73,17 +92,23 @@ export function AdminDashboardPage() {
     } = await supabase.auth.getUser();
 
     if (userError || !user) {
+      setCreating(false);
       navigate("/admin/login");
       return;
     }
 
+    const roomCode = generateRoomCode();
+
     const { error } = await supabase.from("quizzes").insert({
       owner_id: user.id,
       title: cleanTitle,
+      room_code: roomCode,
       status: "waiting",
-      room_code: makeRoomCode(),
-      current_question_order: 0,
+      game_mode: "classic",
+      current_question_order: 1,
     });
+
+    setCreating(false);
 
     if (error) {
       setErrorText(error.message);
@@ -91,11 +116,13 @@ export function AdminDashboardPage() {
     }
 
     setTitle("");
+    setSuccessText("Quiz berhasil dibuat.");
     await loadQuizzes();
   }
 
   async function startQuiz(quizId: string) {
     setErrorText("");
+    setSuccessText("");
 
     const { error } = await supabase
       .from("quizzes")
@@ -110,11 +137,19 @@ export function AdminDashboardPage() {
       return;
     }
 
+    setSuccessText("Quiz dimulai. Peserta baru tidak dapat bergabung lagi.");
     await loadQuizzes();
   }
 
   async function finishQuiz(quizId: string) {
+    const confirmed = window.confirm(
+      "Selesaikan quiz sekarang? Setelah ini podium final akan ditampilkan."
+    );
+
+    if (!confirmed) return;
+
     setErrorText("");
+    setSuccessText("");
 
     const { error } = await supabase.rpc("finish_quiz", {
       p_quiz_id: quizId,
@@ -125,6 +160,7 @@ export function AdminDashboardPage() {
       return;
     }
 
+    setSuccessText("Quiz berhasil diselesaikan.");
     await loadQuizzes();
   }
 
@@ -136,6 +172,7 @@ export function AdminDashboardPage() {
     if (!confirmed) return;
 
     setErrorText("");
+    setSuccessText("");
 
     const { error } = await supabase.rpc("reset_quiz_session", {
       p_quiz_id: quizId,
@@ -146,22 +183,32 @@ export function AdminDashboardPage() {
       return;
     }
 
+    setSuccessText("Sesi quiz berhasil di-reset.");
     await loadQuizzes();
   }
 
   async function logout() {
     await supabase.auth.signOut();
-    navigate("/");
+    navigate("/admin/login");
+  }
+
+  async function copyText(text: string) {
+    try {
+      await navigator.clipboard.writeText(text);
+      setSuccessText("Berhasil disalin.");
+    } catch {
+      setErrorText("Gagal menyalin. Copy manual dari teks yang tersedia.");
+    }
   }
 
   useEffect(() => {
-    checkSessionAndLoad();
+    loadQuizzes();
   }, []);
 
   if (loading) {
     return (
       <main className="min-h-screen bg-slate-950 text-white flex items-center justify-center">
-        <p className="text-slate-300">Memuat dashboard...</p>
+        <p className="text-slate-300">Memuat dashboard admin...</p>
       </main>
     );
   }
@@ -169,29 +216,42 @@ export function AdminDashboardPage() {
   return (
     <main className="min-h-screen bg-slate-950 text-white p-6">
       <section className="mx-auto max-w-6xl">
-        <header className="flex flex-col md:flex-row md:items-center md:justify-between gap-4 mb-8">
+        <header className="mb-8 flex flex-col md:flex-row md:items-start md:justify-between gap-5">
           <div>
             <h1 className="text-4xl font-black">Admin Dashboard</h1>
+
             <p className="text-slate-300 mt-2">
-              Kelola room, soal aktif, dan status quiz.
+              Kelola room, soal aktif, peserta, dan status quiz.
             </p>
           </div>
 
           <button
             onClick={logout}
-            className="rounded-2xl bg-slate-800 px-5 py-3 font-bold hover:bg-slate-700"
+            className="rounded-2xl bg-slate-800 px-6 py-4 font-bold hover:bg-slate-700"
           >
             Logout
           </button>
         </header>
 
+        {errorText && (
+          <div className="mb-6 rounded-2xl bg-red-500/10 border border-red-500/30 p-4 text-red-300">
+            {errorText}
+          </div>
+        )}
+
+        {successText && (
+          <div className="mb-6 rounded-2xl bg-green-500/10 border border-green-500/30 p-4 text-green-300">
+            {successText}
+          </div>
+        )}
+
         <form
           onSubmit={createQuiz}
-          className="mb-8 rounded-3xl bg-slate-900 p-6 shadow-xl"
+          className="rounded-3xl bg-slate-900 p-6 mb-8 shadow-xl"
         >
-          <h2 className="text-2xl font-black mb-4">Buat Quiz Baru</h2>
+          <h2 className="text-2xl font-black mb-5">Buat Quiz Baru</h2>
 
-          <div className="flex flex-col md:flex-row gap-3">
+          <div className="flex flex-col md:flex-row gap-4">
             <input
               className="flex-1 rounded-2xl bg-slate-800 border border-slate-700 p-4 outline-none focus:border-purple-500"
               placeholder="Contoh: Kuis Presentasi Kelompok 1"
@@ -200,19 +260,16 @@ export function AdminDashboardPage() {
               required
             />
 
-            <button className="rounded-2xl bg-purple-600 px-7 py-4 font-bold hover:bg-purple-700">
-              Buat Room
+            <button
+              disabled={creating}
+              className="rounded-2xl bg-purple-600 px-8 py-4 font-bold hover:bg-purple-700 disabled:opacity-60"
+            >
+              {creating ? "Membuat..." : "Buat Room"}
             </button>
           </div>
         </form>
 
-        {errorText && (
-          <div className="mb-6 rounded-2xl bg-red-500/10 border border-red-500/30 p-4 text-red-300">
-            {errorText}
-          </div>
-        )}
-
-        <div className="space-y-4">
+        <section className="space-y-5">
           {quizzes.length === 0 && (
             <div className="rounded-3xl bg-slate-900 p-8 text-center text-slate-300">
               Belum ada quiz. Buat quiz pertama dulu.
@@ -220,18 +277,20 @@ export function AdminDashboardPage() {
           )}
 
           {quizzes.map((quiz) => {
-            const participantLink = `${window.location.origin}${window.location.pathname}#/join/${quiz.room_code}`;
+            const roomCode = quiz.room_code ?? "-";
+            const participantJoinUrl = `${getBaseUrl()}#/join/${roomCode}`;
+            const generalJoinUrl = `${getBaseUrl()}#/join`;
 
             return (
               <article
                 key={quiz.id}
                 className="rounded-3xl bg-slate-900 p-6 shadow-xl"
               >
-                <div className="flex flex-col lg:flex-row lg:items-start lg:justify-between gap-5">
+                <div className="flex flex-col lg:flex-row lg:items-start lg:justify-between gap-6">
                   <div>
-                    <h3 className="text-2xl font-black">{quiz.title}</h3>
+                    <h2 className="text-2xl font-black mb-2">{quiz.title}</h2>
 
-                    <p className="text-slate-300 mt-1">
+                    <p className="text-slate-300">
                       Status:{" "}
                       <span className="font-bold text-white">
                         {quiz.status}
@@ -240,17 +299,15 @@ export function AdminDashboardPage() {
 
                     <p className="text-slate-300">
                       Room Code:{" "}
-                      <span className="font-bold text-white">
-                        {quiz.room_code}
-                      </span>
+                      <span className="font-bold text-white">{roomCode}</span>
                     </p>
 
-<p className="text-slate-300">
-  Mode:{" "}
-  <span className="font-bold text-white">
-    Otomatis per peserta
-  </span>
-</p>
+                    <p className="text-slate-300">
+                      Mode:{" "}
+                      <span className="font-bold text-white">
+                        Otomatis per peserta
+                      </span>
+                    </p>
                   </div>
 
                   <div className="flex flex-wrap gap-3">
@@ -283,36 +340,96 @@ export function AdminDashboardPage() {
                     </Link>
 
                     <Link
-                      to={`/join/${quiz.room_code}`}
-                      className="rounded-2xl bg-slate-800 px-5 py-3 font-bold hover:bg-slate-700"
-                    >
-                      Preview Join
-                    </Link>
-                    <Link
                       to={`/admin/live/${quiz.id}`}
                       className="rounded-2xl bg-blue-600 px-5 py-3 font-bold hover:bg-blue-700"
                     >
                       Live Monitor
                     </Link>
+
                     <Link
-                        to={`/admin/cheating/${quiz.id}`}
-                        className="rounded-2xl bg-red-700 px-5 py-3 font-bold hover:bg-red-800"
+                      to={`/admin/cheating/${quiz.id}`}
+                      className="rounded-2xl bg-red-800 px-5 py-3 font-bold hover:bg-red-900"
                     >
-                        Anti-Cheating
+                      Anti-Cheating
+                    </Link>
+
+                    <Link
+                      to={`/join/${roomCode}`}
+                      className="rounded-2xl bg-slate-700 px-5 py-3 font-bold hover:bg-slate-600"
+                    >
+                      Preview Join
                     </Link>
                   </div>
                 </div>
 
-                <div className="mt-5 rounded-2xl bg-slate-950 p-4">
-                  <p className="text-sm text-slate-400 mb-2">Link peserta:</p>
-                  <code className="break-all text-purple-300">
-                    {participantLink}
-                  </code>
+                <div className="mt-6 rounded-2xl bg-slate-950 p-5">
+                  <p className="text-slate-400 mb-2">Kode peserta:</p>
+
+                  <div className="flex flex-col md:flex-row md:items-center gap-3">
+                    <code className="text-3xl font-black text-purple-200">
+                      {roomCode}
+                    </code>
+
+                    <button
+                      onClick={() => copyText(roomCode)}
+                      className="rounded-xl bg-slate-800 px-4 py-2 font-bold hover:bg-slate-700"
+                    >
+                      Copy Kode
+                    </button>
+                  </div>
                 </div>
+
+                <div className="mt-4 rounded-2xl bg-slate-950 p-5">
+                  <p className="text-slate-400 mb-2">Link peserta langsung:</p>
+
+                  <div className="flex flex-col lg:flex-row lg:items-center gap-3">
+                    <code className="flex-1 break-all text-purple-200">
+                      {participantJoinUrl}
+                    </code>
+
+                    <button
+                      onClick={() => copyText(participantJoinUrl)}
+                      className="rounded-xl bg-slate-800 px-4 py-2 font-bold hover:bg-slate-700"
+                    >
+                      Copy Link
+                    </button>
+                  </div>
+                </div>
+
+                <div className="mt-4 rounded-2xl bg-slate-950 p-5">
+                  <p className="text-slate-400 mb-2">
+                    Link halaman join umum:
+                  </p>
+
+                  <div className="flex flex-col lg:flex-row lg:items-center gap-3">
+                    <code className="flex-1 break-all text-purple-200">
+                      {generalJoinUrl}
+                    </code>
+
+                    <button
+                      onClick={() => copyText(generalJoinUrl)}
+                      className="rounded-xl bg-slate-800 px-4 py-2 font-bold hover:bg-slate-700"
+                    >
+                      Copy Link Umum
+                    </button>
+                  </div>
+                </div>
+
+                {quiz.status === "live" && (
+                  <div className="mt-4 rounded-2xl bg-yellow-500/10 border border-yellow-500/30 p-4 text-yellow-200">
+                    Quiz sedang berjalan. Peserta baru tidak dapat bergabung.
+                  </div>
+                )}
+
+                {quiz.status === "ended" && (
+                  <div className="mt-4 rounded-2xl bg-green-500/10 border border-green-500/30 p-4 text-green-200">
+                    Quiz sudah selesai. Podium dan hasil final sudah tersedia.
+                  </div>
+                )}
               </article>
             );
           })}
-        </div>
+        </section>
       </section>
     </main>
   );

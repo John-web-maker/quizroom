@@ -25,7 +25,9 @@ export function JoinPage() {
   const { roomCode } = useParams();
   const navigate = useNavigate();
 
+  const [manualRoomCode, setManualRoomCode] = useState(roomCode ?? "");
   const [displayName, setDisplayName] = useState("");
+
   const [errorText, setErrorText] = useState("");
   const [loading, setLoading] = useState(false);
 
@@ -35,11 +37,26 @@ export function JoinPage() {
     setErrorText("");
     setLoading(true);
 
+    const cleanRoomCode = manualRoomCode.trim().toUpperCase();
+    const cleanName = displayName.trim();
+
+    if (!cleanRoomCode) {
+      setErrorText("Kode kuis wajib diisi.");
+      setLoading(false);
+      return;
+    }
+
+    if (!cleanName) {
+      setErrorText("Nama peserta wajib diisi.");
+      setLoading(false);
+      return;
+    }
+
     const deviceId = getOrCreateDeviceId();
 
     const { data, error } = await supabase.rpc("join_room", {
-      p_room_code: roomCode,
-      p_display_name: displayName,
+      p_room_code: cleanRoomCode,
+      p_display_name: cleanName,
       p_device_id: deviceId,
     });
 
@@ -54,7 +71,7 @@ export function JoinPage() {
     sessionStorage.setItem("quiz_id", data.quiz_id);
     sessionStorage.setItem("room_code", data.room_code);
     sessionStorage.setItem("session_token", data.session_token);
-    sessionStorage.setItem("participant_name", displayName.trim());
+    sessionStorage.setItem("participant_name", cleanName);
 
     navigate(`/lobby/${data.room_code}`);
   }
@@ -67,7 +84,22 @@ export function JoinPage() {
       >
         <h1 className="text-3xl font-black mb-2">Masuk Kuis</h1>
 
-        <p className="text-slate-300 mb-6">Room code: {roomCode}</p>
+        <p className="text-slate-300 mb-6">
+          Masukkan kode kuis dari admin, lalu isi nama peserta.
+        </p>
+
+        <label className="block mb-5">
+          <span className="block mb-2 text-slate-300">Kode kuis</span>
+
+          <input
+            className="w-full uppercase rounded-2xl bg-slate-800 border border-slate-700 p-4 outline-none focus:border-purple-500"
+            placeholder="Contoh: SRB3V2"
+            value={manualRoomCode}
+            onChange={(e) => setManualRoomCode(e.target.value.toUpperCase())}
+            required
+            maxLength={20}
+          />
+        </label>
 
         <label className="block mb-5">
           <span className="block mb-2 text-slate-300">Nama peserta</span>
