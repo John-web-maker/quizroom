@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { Link } from "react-router-dom";
 import { supabase } from "../lib/supabase";
 
@@ -6,15 +6,15 @@ type ResultRow = {
   quiz_status: string;
   participant_name: string;
   score: number;
-  participant_rank: number;
-  total_participants: number;
+  participant_rank: number | null;
+  total_participants: number | null;
   avg_answer_ms: number | null;
-  question_order: number;
-  question_text: string;
+  question_order: number | null;
+  question_text: string | null;
   selected_option_text: string | null;
   correct_option_text: string | null;
   is_correct: boolean | null;
-  points_awarded: number;
+  points_awarded: number | null;
   answer_ms: number | null;
 };
 
@@ -26,6 +26,7 @@ type PodiumRow = {
 
 function formatMs(ms: number | null) {
   if (ms === null || ms === undefined) return "-";
+
   return `${(ms / 1000).toFixed(1)} detik`;
 }
 
@@ -34,28 +35,70 @@ export function ResultPage() {
   const [podium, setPodium] = useState<PodiumRow[]>([]);
   const [errorText, setErrorText] = useState("");
   const [loading, setLoading] = useState(true);
-
   const [revealedRanks, setRevealedRanks] = useState<number[]>([]);
   const [showPodiumOverlay, setShowPodiumOverlay] = useState(false);
   const [hasShownPodium, setHasShownPodium] = useState(false);
 
-  const summary = rows[0];
+  const summary = rows[0] ?? null;
   const quizEnded = summary?.quiz_status === "ended";
 
+  const reviewRows = useMemo(() => {
+    return rows.filter(
+      (row) =>
+        row.question_order !== null &&
+        row.question_order !== undefined &&
+        Boolean(row.question_text)
+    );
+  }, [rows]);
+
+  const podiumRanks = useMemo(() => {
+    return [...podium].sort(
+      (a, b) => b.participant_rank - a.participant_rank
+    );
+  }, [podium]);
+
+  const podiumReady = quizEnded && podiumRanks.length > 0;
+
   const stats = useMemo(() => {
-    const answered = rows.filter((row) => row.selected_option_text !== null);
-    const correct = rows.filter((row) => row.is_correct === true);
-    const wrong = rows.filter((row) => row.is_correct === false);
-    const unanswered = rows.filter((row) => row.selected_option_text === null);
+    const answered = reviewRows.filter(
+      (row) => row.selected_option_text !== null
+    );
+
+    const correct = reviewRows.filter((row) => row.is_correct === true);
+    const wrong = reviewRows.filter((row) => row.is_correct === false);
+
+    const unanswered = reviewRows.filter(
+      (row) => row.selected_option_text === null
+    );
 
     return {
       answered: answered.length,
       correct: correct.length,
       wrong: wrong.length,
       unanswered: unanswered.length,
-      total: rows.length,
+      total: reviewRows.length,
     };
-  }, [rows]);
+  }, [reviewRows]);
+
+  const startPodiumAnimation = useCallback(
+    function startPodiumAnimation() {
+      if (!podiumReady) return;
+
+      setShowPodiumOverlay(true);
+      setRevealedRanks([]);
+
+      const ranksToReveal = podiumRanks.map((item) => item.participant_rank);
+
+      ranksToReveal.forEach((rank, index) => {
+        window.setTimeout(() => {
+          setRevealedRanks((current) =>
+            current.includes(rank) ? current : [...current, rank]
+          );
+        }, 500 + index * 900);
+      });
+    },
+    [podiumReady, podiumRanks]
+  );
 
   async function loadResult(silent = false) {
     if (!silent) {
@@ -87,6 +130,10 @@ export function ResultPage() {
       return;
     }
 
+    const nextRows = (resultData ?? []) as ResultRow[];
+    const nextSummary = nextRows[0] ?? null;
+    const nextQuizEnded = nextSummary?.quiz_status === "ended";
+
     const { data: podiumData, error: podiumError } = await supabase.rpc(
       "get_podium_for_participant",
       {
@@ -95,14 +142,14 @@ export function ResultPage() {
       }
     );
 
-    if (podiumError) {
+    if (podiumError && nextQuizEnded) {
       setErrorText(podiumError.message);
       setLoading(false);
       return;
     }
 
-    setRows((resultData ?? []) as ResultRow[]);
-    setPodium((podiumData ?? []) as PodiumRow[]);
+    setRows(nextRows);
+    setPodium(podiumError ? [] : ((podiumData ?? []) as PodiumRow[]));
     setLoading(false);
   }
 
@@ -117,31 +164,12 @@ export function ResultPage() {
   }, []);
 
   useEffect(() => {
-    if (!quizEnded) return;
+    if (!podiumReady) return;
     if (hasShownPodium) return;
 
-    setShowPodiumOverlay(true);
-    setRevealedRanks([]);
     setHasShownPodium(true);
-
-    const t1 = window.setTimeout(() => {
-      setRevealedRanks([3]);
-    }, 500);
-
-    const t2 = window.setTimeout(() => {
-      setRevealedRanks([3, 2]);
-    }, 1700);
-
-    const t3 = window.setTimeout(() => {
-      setRevealedRanks([3, 2, 1]);
-    }, 3000);
-
-    return () => {
-      window.clearTimeout(t1);
-      window.clearTimeout(t2);
-      window.clearTimeout(t3);
-    };
-  }, [quizEnded, hasShownPodium]);
+    startPodiumAnimation();
+  }, [podiumReady, hasShownPodium, startPodiumAnimation]);
 
   function closePodiumOverlay() {
     setShowPodiumOverlay(false);
@@ -156,7 +184,7 @@ export function ResultPage() {
 
   if (loading) {
     return (
-      <main className="min-h-screen bg-slate-950 text-white flex items-center justify-center">
+      <main className="min-h-screen bg-slate-950 text-white flex items-center justify-center p-6">
         <p className="text-slate-300">Memuat hasil...</p>
       </main>
     );
@@ -165,10 +193,10 @@ export function ResultPage() {
   if (errorText) {
     return (
       <main className="min-h-screen bg-slate-950 text-white flex items-center justify-center p-6">
-        <section className="max-w-xl rounded-3xl bg-slate-900 p-8 text-center">
-          <h1 className="text-3xl font-black mb-4">Hasil tidak tersedia</h1>
+        <section className="max-w-xl rounded-3xl bg-slate-900 p-8 text-center shadow-xl">
+          <h1 className="text-4xl font-black mb-4">Hasil tidak tersedia</h1>
 
-          <p className="text-red-300 mb-6">{errorText}</p>
+          <p className="text-red-300 mb-8">{errorText}</p>
 
           <Link
             to="/"
@@ -184,10 +212,10 @@ export function ResultPage() {
   if (!summary) {
     return (
       <main className="min-h-screen bg-slate-950 text-white flex items-center justify-center p-6">
-        <section className="max-w-xl rounded-3xl bg-slate-900 p-8 text-center">
-          <h1 className="text-3xl font-black mb-4">Belum ada hasil</h1>
+        <section className="max-w-xl rounded-3xl bg-slate-900 p-8 text-center shadow-xl">
+          <h1 className="text-4xl font-black mb-4">Belum ada hasil</h1>
 
-          <p className="text-slate-300 mb-6">
+          <p className="text-slate-300 mb-8">
             Jawaban peserta belum tersedia.
           </p>
 
@@ -204,65 +232,65 @@ export function ResultPage() {
 
   return (
     <main className="min-h-screen bg-slate-950 text-white p-6">
-      {quizEnded && showPodiumOverlay && (
-        <section className="fixed inset-0 z-50 bg-slate-950 text-white p-6 overflow-y-auto">
-          <div className="mx-auto max-w-6xl min-h-screen flex flex-col justify-center">
-            <div className="text-center mb-10">
-              <p className="inline-flex rounded-full bg-purple-500/20 px-5 py-2 text-purple-200 font-bold mb-5">
-                Kuis Selesai
-              </p>
+      {podiumReady && showPodiumOverlay && (
+        <div className="fixed inset-0 z-50 bg-slate-950/95 backdrop-blur flex items-center justify-center p-6">
+          <section className="w-full max-w-4xl rounded-3xl bg-slate-900 p-8 shadow-2xl border border-purple-500/30">
+            <div className="text-center mb-8">
+              <p className="text-purple-200 font-bold mb-2">Kuis Selesai</p>
 
-              <h1 className="text-5xl md:text-7xl font-black">
-                Podium Juara
-              </h1>
+              <h1 className="text-5xl font-black mb-3">Podium Juara</h1>
 
-              <p className="text-slate-300 mt-4">
-                Pemenang ditampilkan berurutan dari Juara 3 hingga Juara 1.
+              <p className="text-slate-300">
+                Pemenang ditampilkan berdasarkan ranking final yang tersedia.
               </p>
             </div>
 
-            <div className="grid grid-cols-1 md:grid-cols-3 gap-5 items-end">
-              {[3, 2, 1].map((rank) => {
-                const item = podium.find(
-                  (podiumItem) => podiumItem.participant_rank === rank
-                );
-
-                const visible = revealedRanks.includes(rank);
+            <div className="grid grid-cols-1 md:grid-cols-3 gap-4 items-end">
+              {podiumRanks.map((item) => {
+                const visible = revealedRanks.includes(item.participant_rank);
 
                 return (
                   <div
-                    key={rank}
+                    key={item.participant_rank}
                     className={[
-                      "rounded-[2rem] p-8 text-center border transition-all duration-700",
+                      "rounded-3xl border border-purple-500/30 bg-slate-950 p-6 text-center transition-all duration-500",
                       visible
-                        ? "opacity-100 scale-100 translate-y-0"
-                        : "opacity-0 scale-75 translate-y-12",
-                      rank === 1
-                        ? "bg-yellow-400/20 border-yellow-300/60 md:min-h-[340px]"
-                        : rank === 2
-                        ? "bg-slate-700/50 border-slate-300/40 md:min-h-[285px]"
-                        : "bg-orange-500/20 border-orange-300/50 md:min-h-[245px]",
+                        ? "opacity-100 translate-y-0 scale-100"
+                        : "opacity-0 translate-y-6 scale-95",
+                      item.participant_rank === 1
+                        ? "md:order-2 md:min-h-[260px]"
+                        : item.participant_rank === 2
+                        ? "md:order-1 md:min-h-[220px]"
+                        : "md:order-3 md:min-h-[190px]",
                     ].join(" ")}
                   >
-                    <div className="text-7xl mb-5">
-                      {rank === 1 ? "🏆" : rank === 2 ? "🥈" : "🥉"}
+                    <div className="text-5xl mb-4">
+                      {item.participant_rank === 1
+                        ? "🥇"
+                        : item.participant_rank === 2
+                        ? "🥈"
+                        : item.participant_rank === 3
+                        ? "🥉"
+                        : "🏅"}
                     </div>
 
-                    <p className="text-slate-300 mb-2">Juara {rank}</p>
-
-                    <p className="text-4xl font-black mb-3">
-                      {item?.display_name ?? "-"}
+                    <p className="text-slate-400">
+                      Juara {item.participant_rank}
                     </p>
 
-                    <p className="text-xl text-slate-200">
-                      {item?.score ?? 0} poin
+                    <h2 className="text-2xl font-black mt-2">
+                      {item.display_name}
+                    </h2>
+
+                    <p className="mt-3 text-purple-200 font-bold">
+                      {item.score} poin
                     </p>
                   </div>
                 );
               })}
             </div>
 
-            <div className="text-center mt-10">
+            <div className="mt-8 text-center">
               <button
                 onClick={closePodiumOverlay}
                 className="rounded-2xl bg-purple-600 px-7 py-4 font-bold hover:bg-purple-700"
@@ -270,55 +298,57 @@ export function ResultPage() {
                 Lihat Review Jawaban
               </button>
             </div>
-          </div>
-        </section>
+          </section>
+        </div>
       )}
 
-      <section className="mx-auto max-w-6xl">
-        <header className="mb-8">
-          <h1 className="text-4xl font-black">Hasil Kuis</h1>
+      <section className="mx-auto max-w-5xl">
+        <header className="mb-8 text-center">
+          <h1 className="text-5xl font-black mb-3">Hasil Kuis</h1>
 
-          <p className="text-slate-300 mt-2">
+          <p className="text-slate-300">
             Review skor, ranking, dan jawaban kamu.
           </p>
-
-          {!quizEnded && (
-            <div className="mt-5 rounded-2xl bg-yellow-500/10 border border-yellow-500/30 p-4 text-yellow-200">
-              Kuis belum diselesaikan oleh admin. Podium final belum tersedia.
-              Hasil di bawah ini adalah hasil sementara.
-            </div>
-          )}
-
-          {quizEnded && !showPodiumOverlay && (
-            <div className="mt-5 rounded-2xl bg-green-500/10 border border-green-500/30 p-4 text-green-200">
-              Kuis telah diselesaikan oleh admin. Ranking dan podium sudah
-              final.
-            </div>
-          )}
         </header>
 
-        <section className="grid grid-cols-1 lg:grid-cols-4 gap-4 mb-8">
+        {!quizEnded && (
+          <div className="mb-6 rounded-2xl bg-yellow-500/10 border border-yellow-500/30 p-4 text-yellow-200">
+            Kuis belum diselesaikan oleh admin. Podium final dan review kunci
+            jawaban baru dibuka setelah admin menekan tombol Selesaikan.
+          </div>
+        )}
+
+        {quizEnded && (
+          <div className="mb-6 rounded-2xl bg-green-500/10 border border-green-500/30 p-4 text-green-200">
+            Kuis telah diselesaikan oleh admin. Ranking, podium, dan review
+            jawaban sudah final.
+          </div>
+        )}
+
+        <section className="grid grid-cols-1 md:grid-cols-4 gap-4 mb-8">
           <div className="rounded-3xl bg-slate-900 p-6">
-            <p className="text-slate-400 mb-2">Nama</p>
-            <p className="text-2xl font-black">{summary.participant_name}</p>
+            <p className="text-slate-400">Nama</p>
+            <p className="text-2xl font-black mt-2">
+              {summary.participant_name}
+            </p>
           </div>
 
           <div className="rounded-3xl bg-slate-900 p-6">
-            <p className="text-slate-400 mb-2">Skor</p>
-            <p className="text-2xl font-black">{summary.score ?? 0}</p>
+            <p className="text-slate-400">Skor</p>
+            <p className="text-2xl font-black mt-2">{summary.score ?? 0}</p>
           </div>
 
           <div className="rounded-3xl bg-slate-900 p-6">
-            <p className="text-slate-400 mb-2">Ranking</p>
-            <p className="text-2xl font-black">
+            <p className="text-slate-400">Ranking</p>
+            <p className="text-2xl font-black mt-2">
               #{summary.participant_rank ?? "-"} dari{" "}
               {summary.total_participants ?? "-"}
             </p>
           </div>
 
           <div className="rounded-3xl bg-slate-900 p-6">
-            <p className="text-slate-400 mb-2">Rata-rata waktu</p>
-            <p className="text-2xl font-black">
+            <p className="text-slate-400">Rata-rata waktu</p>
+            <p className="text-2xl font-black mt-2">
               {formatMs(summary.avg_answer_ms ?? null)}
             </p>
           </div>
@@ -326,167 +356,180 @@ export function ResultPage() {
 
         {quizEnded ? (
           <section className="rounded-3xl bg-slate-900 p-6 mb-8">
-            <div className="flex flex-col md:flex-row md:items-center md:justify-between gap-4 mb-5">
+            <div className="flex flex-col md:flex-row md:items-center md:justify-between gap-4 mb-6">
               <div>
-                <h2 className="text-2xl font-black">Podium Final</h2>
-                <p className="text-slate-300 mt-1">
+                <h2 className="text-3xl font-black">Podium Final</h2>
+
+                <p className="text-slate-300 mt-2">
                   Ranking final setelah admin menyelesaikan kuis.
                 </p>
               </div>
 
-              <button
-                onClick={() => {
-                  setShowPodiumOverlay(true);
-                  setRevealedRanks([]);
-
-                  window.setTimeout(() => setRevealedRanks([3]), 300);
-                  window.setTimeout(() => setRevealedRanks([3, 2]), 1400);
-                  window.setTimeout(() => setRevealedRanks([3, 2, 1]), 2600);
-                }}
-                className="rounded-2xl bg-purple-600 px-5 py-3 font-bold hover:bg-purple-700"
-              >
-                Putar Ulang Podium
-              </button>
+              {podiumReady && (
+                <button
+                  onClick={startPodiumAnimation}
+                  className="rounded-2xl bg-purple-600 px-5 py-3 font-bold hover:bg-purple-700"
+                >
+                  Putar Ulang Podium
+                </button>
+              )}
             </div>
 
-            <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-              {[3, 2, 1].map((rank) => {
-                const item = podium.find(
-                  (podiumItem) => podiumItem.participant_rank === rank
-                );
-
-                return (
+            {podiumReady ? (
+              <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+                {podiumRanks.map((item) => (
                   <div
-                    key={rank}
-                    className={[
-                      "rounded-3xl p-6 text-center border",
-                      rank === 1
-                        ? "bg-yellow-400/20 border-yellow-300/50"
-                        : rank === 2
-                        ? "bg-slate-700/50 border-slate-400/40"
-                        : "bg-orange-500/20 border-orange-300/40",
-                    ].join(" ")}
+                    key={item.participant_rank}
+                    className="rounded-2xl bg-slate-950 p-5 text-center border border-slate-800"
                   >
-                    <div className="text-5xl mb-4">
-                      {rank === 1 ? "🏆" : rank === 2 ? "🥈" : "🥉"}
+                    <div className="text-4xl mb-3">
+                      {item.participant_rank === 1
+                        ? "🥇"
+                        : item.participant_rank === 2
+                        ? "🥈"
+                        : item.participant_rank === 3
+                        ? "🥉"
+                        : "🏅"}
                     </div>
 
-                    <p className="text-slate-300 mb-2">Juara {rank}</p>
-
-                    <p className="text-3xl font-black mb-2">
-                      {item?.display_name ?? "-"}
+                    <p className="text-slate-400">
+                      Juara {item.participant_rank}
                     </p>
 
-                    <p className="text-slate-300">
-                      {item?.score ?? 0} poin
+                    <p className="text-xl font-black mt-2">
+                      {item.display_name}
+                    </p>
+
+                    <p className="text-purple-200 font-bold mt-2">
+                      {item.score} poin
                     </p>
                   </div>
-                );
-              })}
-            </div>
+                ))}
+              </div>
+            ) : (
+              <div className="rounded-2xl bg-slate-950 p-5 text-slate-300">
+                Podium belum tersedia. Tunggu beberapa detik atau muat ulang
+                halaman.
+              </div>
+            )}
           </section>
         ) : (
           <section className="rounded-3xl bg-slate-900 p-6 mb-8">
-            <h2 className="text-2xl font-black mb-3">
+            <h2 className="text-3xl font-black mb-3">
               Podium Belum Tersedia
             </h2>
 
             <p className="text-slate-300">
-              Podium akan muncul setelah admin menekan tombol{" "}
-              <span className="font-bold text-white">Selesaikan</span>.
+              Podium akan muncul setelah admin menekan tombol Selesaikan.
             </p>
           </section>
         )}
 
         <section className="grid grid-cols-2 md:grid-cols-4 gap-4 mb-8">
-          <div className="rounded-3xl bg-slate-900 p-5">
+          <div className="rounded-3xl bg-slate-900 p-6 text-center">
             <p className="text-slate-400">Benar</p>
-            <p className="text-3xl font-black text-green-300">
-              {stats.correct}
-            </p>
+            <p className="text-3xl font-black mt-2">{stats.correct}</p>
           </div>
 
-          <div className="rounded-3xl bg-slate-900 p-5">
+          <div className="rounded-3xl bg-slate-900 p-6 text-center">
             <p className="text-slate-400">Salah</p>
-            <p className="text-3xl font-black text-red-300">{stats.wrong}</p>
+            <p className="text-3xl font-black mt-2">{stats.wrong}</p>
           </div>
 
-          <div className="rounded-3xl bg-slate-900 p-5">
+          <div className="rounded-3xl bg-slate-900 p-6 text-center">
             <p className="text-slate-400">Tidak dijawab</p>
-            <p className="text-3xl font-black text-yellow-300">
-              {stats.unanswered}
-            </p>
+            <p className="text-3xl font-black mt-2">{stats.unanswered}</p>
           </div>
 
-          <div className="rounded-3xl bg-slate-900 p-5">
+          <div className="rounded-3xl bg-slate-900 p-6 text-center">
             <p className="text-slate-400">Total soal</p>
-            <p className="text-3xl font-black">{stats.total}</p>
+            <p className="text-3xl font-black mt-2">{stats.total}</p>
           </div>
         </section>
 
-        <section id="review" className="space-y-4 mb-8">
-          <h2 className="text-2xl font-black">Review Jawaban</h2>
+        <section id="review" className="rounded-3xl bg-slate-900 p-6 mb-8">
+          <h2 className="text-3xl font-black mb-6">Review Jawaban</h2>
 
-          {rows.map((row) => (
-            <article
-              key={row.question_order}
-              className="rounded-3xl bg-slate-900 p-6"
-            >
-              <div className="flex flex-col md:flex-row md:items-start md:justify-between gap-3 mb-4">
-                <h3 className="text-xl font-black">
-                  {row.question_order}. {row.question_text}
-                </h3>
+          {!quizEnded && (
+            <div className="rounded-2xl bg-slate-950 p-5 text-slate-300">
+              Review jawaban dan kunci benar baru dibuka setelah admin
+              menyelesaikan kuis.
+            </div>
+          )}
 
-                <span
-                  className={[
-                    "rounded-full px-4 py-2 text-sm font-bold",
-                    row.is_correct === true
-                      ? "bg-green-500/20 text-green-300"
-                      : row.is_correct === false
-                      ? "bg-red-500/20 text-red-300"
-                      : "bg-yellow-500/20 text-yellow-300",
-                  ].join(" ")}
+          {quizEnded && reviewRows.length === 0 && (
+            <div className="rounded-2xl bg-slate-950 p-5 text-slate-300">
+              Belum ada detail jawaban untuk ditampilkan.
+            </div>
+          )}
+
+          {quizEnded && reviewRows.length > 0 && (
+            <div className="space-y-4">
+              {reviewRows.map((row) => (
+                <article
+                  key={`${row.question_order}-${row.question_text}`}
+                  className="rounded-2xl bg-slate-950 p-5"
                 >
-                  {row.is_correct === true
-                    ? "Benar"
-                    : row.is_correct === false
-                    ? "Salah"
-                    : "Tidak dijawab"}
-                </span>
-              </div>
+                  <div className="flex flex-col md:flex-row md:items-start md:justify-between gap-3 mb-4">
+                    <h3 className="text-xl font-black">
+                      {row.question_order}. {row.question_text}
+                    </h3>
 
-              <div className="grid grid-cols-1 md:grid-cols-3 gap-4 text-slate-300">
-                <div className="rounded-2xl bg-slate-800 p-4">
-                  <p className="text-slate-400 mb-1">Jawaban kamu</p>
-                  <p className="font-bold text-white">
-                    {row.selected_option_text ?? "-"}
-                  </p>
-                </div>
+                    <span
+                      className={[
+                        "rounded-full px-4 py-2 text-sm font-bold",
+                        row.is_correct === true
+                          ? "bg-green-500/10 text-green-300"
+                          : row.is_correct === false
+                          ? "bg-red-500/10 text-red-300"
+                          : "bg-slate-800 text-slate-300",
+                      ].join(" ")}
+                    >
+                      {row.is_correct === true
+                        ? "Benar"
+                        : row.is_correct === false
+                        ? "Salah"
+                        : "Tidak dijawab"}
+                    </span>
+                  </div>
 
-                <div className="rounded-2xl bg-slate-800 p-4">
-                  <p className="text-slate-400 mb-1">Jawaban benar</p>
-                  <p className="font-bold text-white">
-                    {row.correct_option_text ?? "-"}
-                  </p>
-                </div>
+                  <div className="grid grid-cols-1 md:grid-cols-3 gap-4 text-sm">
+                    <div>
+                      <p className="text-slate-400 mb-1">Jawaban kamu</p>
+                      <p className="font-bold">
+                        {row.selected_option_text ?? "-"}
+                      </p>
+                    </div>
 
-                <div className="rounded-2xl bg-slate-800 p-4">
-                  <p className="text-slate-400 mb-1">Waktu / poin</p>
-                  <p className="font-bold text-white">
-                    {formatMs(row.answer_ms)} · {row.points_awarded} poin
-                  </p>
-                </div>
-              </div>
-            </article>
-          ))}
+                    <div>
+                      <p className="text-slate-400 mb-1">Jawaban benar</p>
+                      <p className="font-bold">
+                        {row.correct_option_text ?? "-"}
+                      </p>
+                    </div>
+
+                    <div>
+                      <p className="text-slate-400 mb-1">Waktu / poin</p>
+                      <p className="font-bold">
+                        {formatMs(row.answer_ms)} · {row.points_awarded ?? 0}{" "}
+                        poin
+                      </p>
+                    </div>
+                  </div>
+                </article>
+              ))}
+            </div>
+          )}
         </section>
 
-        <Link
-          to="/thanks"
-          className="inline-block rounded-2xl bg-purple-600 px-7 py-4 font-bold hover:bg-purple-700"
-        >
-          Keluar dari Permainan
-        </Link>
+        <div className="text-center">
+          <Link
+            to="/thanks"
+            className="inline-flex rounded-2xl bg-purple-600 px-7 py-4 font-bold hover:bg-purple-700"
+          >
+            Keluar dari Permainan
+          </Link>
+        </div>
       </section>
     </main>
   );
