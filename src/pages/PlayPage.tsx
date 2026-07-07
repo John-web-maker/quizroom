@@ -23,6 +23,15 @@ type Option = {
   order: number;
 };
 
+type SubmitAnswerResponse = {
+  completed?: boolean;
+  already_answered?: boolean;
+  accepted?: boolean;
+  is_correct?: boolean | null;
+  points_awarded?: number | null;
+  message?: string;
+};
+
 function computeSecondsLeft(startedAt: string | null, limit: number | null) {
   if (!startedAt || !limit) return 0;
 
@@ -211,18 +220,24 @@ export function PlayPage() {
       return;
     }
 
+    const submitResult = data as SubmitAnswerResponse;
+
     setAnswered(true);
     answeredRef.current = true;
     advanceLockRef.current = true;
 
-    if (data?.already_answered) {
+    if (submitResult?.already_answered) {
       setMessage("Kamu sudah menjawab soal ini.");
+    } else if (submitResult?.is_correct === true) {
+      setMessage(`Benar! +${submitResult?.points_awarded ?? 0} poin`);
+    } else if (submitResult?.is_correct === false) {
+      setMessage("Belum tepat. Jawaban kamu sudah tersimpan.");
     } else {
       setMessage("Jawaban tersimpan. Lanjut ke soal berikutnya...");
     }
 
     window.setTimeout(async () => {
-      if (data?.completed) {
+      if (submitResult?.completed) {
         navigate(`/result/${roomCode}`);
         return;
       }
@@ -236,7 +251,7 @@ export function PlayPage() {
         setTransitioning(false);
         transitioningRef.current = false;
       }, 300);
-    }, 900);
+    }, 1100);
   }
 
   const skipQuestionBecauseTimeIsUp = useCallback(
